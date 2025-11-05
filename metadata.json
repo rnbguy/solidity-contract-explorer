@@ -1,0 +1,5 @@
+{
+  "name": "Ethereum Contract Explorer",
+  "description": "An advanced Postman-like interface to interact with any Ethereum smart contract. Validate contracts, read state, and send transactions with ease.",
+  "requestFramePermissions": []
+}
