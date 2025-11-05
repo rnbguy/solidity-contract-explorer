@@ -1,8 +1,9 @@
 
+
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import { ethers, BrowserProvider, JsonRpcProvider, Contract, Interface, isAddress, getAddress, ParamType } from 'ethers';
 import type { AbiItem, PastTransaction, FullTransaction, EthersError } from '../types';
-import { ShieldCheckIcon, PlugIcon, EyeIcon, EyeSlashIcon, CheckCircleIcon, XCircleIcon, SpinnerIcon, WalletIcon, ServerIcon, ClipboardDocumentListIcon, CodeBracketIcon, ClipboardIcon, ClipboardCheckIcon, MinusIcon, PlusIcon, ArrowRightCircleIcon, PaperAirplaneIcon } from './icons';
+import { ShieldCheckIcon, PlugIcon, EyeIcon, EyeSlashIcon, CheckCircleIcon, XCircleIcon, SpinnerIcon, WalletIcon, ServerIcon, ClipboardDocumentListIcon, CodeBracketIcon, ClipboardIcon, ClipboardCheckIcon, MinusIcon, PlusIcon, ArrowRightCircleIcon, PaperAirplaneIcon, LinkSlashIcon, TrashIcon } from './icons';
 
 declare global {
   interface Window {
@@ -343,9 +344,10 @@ const FunctionForm: React.FC<{
 
 
 const ContractExplorer: React.FC = () => {
-    const [rpcUrl, setRpcUrl] = useState<string>('https://cloudflare-eth.com');
-    const [contractAddress, setContractAddress] = useState<string>('');
-    const [abi, setAbi] = useState<string>('');
+    const [rpcUrl, setRpcUrl] = useState<string>(() => localStorage.getItem('rpcUrl') || 'https://cloudflare-eth.com');
+    const [contractAddress, setContractAddress] = useState<string>(() => localStorage.getItem('contractAddress') || '');
+    const [abi, setAbi] = useState<string>(() => localStorage.getItem('abi') || '');
+
     const [contract, setContract] = useState<Contract | null>(null);
     const [provider, setProvider] = useState<JsonRpcProvider | null>(null);
     const [abiItems, setAbiItems] = useState<AbiItem[]>([]);
@@ -369,8 +371,43 @@ const ContractExplorer: React.FC = () => {
     const [isConnectingWallet, setIsConnectingWallet] = useState<boolean>(false);
 
     useEffect(() => {
-        const checkConnection = async () => {
-            if (window.ethereum) {
+        localStorage.setItem('rpcUrl', rpcUrl);
+        localStorage.setItem('contractAddress', contractAddress);
+        localStorage.setItem('abi', abi);
+    }, [rpcUrl, contractAddress, abi]);
+
+    const resetStoredValues = useCallback(() => {
+        localStorage.removeItem('rpcUrl');
+        localStorage.removeItem('contractAddress');
+        localStorage.removeItem('abi');
+
+        // Reset inputs to default
+        setRpcUrl('https://cloudflare-eth.com');
+        setContractAddress('');
+        setAbi('');
+        
+        // Reset all derived and status states
+        setContract(null);
+        setProvider(null);
+        setAbiItems([]);
+        setError('');
+        setPastTxs([]);
+        setSelectedTx(null);
+        setIsTxModalOpen(false);
+        setBytecode('');
+        setIsValidationLoading(false);
+        setValidationError('');
+        setConnectionStatus('idle');
+        setValidationStatus('idle');
+        setActiveTab('read');
+        setSelectedReadFn('');
+        setSelectedWriteFn('');
+    }, []);
+
+    useEffect(() => {
+        const checkInitialConnection = async () => {
+            if (!window.ethereum) return;
+            try {
                 const accounts = await window.ethereum.request({ method: 'eth_accounts' });
                 if (accounts.length > 0) {
                     const browserProvider = new BrowserProvider(window.ethereum);
@@ -378,9 +415,38 @@ const ContractExplorer: React.FC = () => {
                     setConnectedAccount(accounts[0]);
                     setConnectedSigner(signer);
                 }
+            } catch (err) {
+                console.error("Could not check initial wallet connection:", err);
             }
         };
-        checkConnection();
+
+        const handleAccountsChanged = async (accounts: string[]) => {
+            if (accounts.length === 0) {
+                setConnectedAccount(null);
+                setConnectedSigner(null);
+            } else {
+                 try {
+                    const browserProvider = new BrowserProvider(window.ethereum);
+                    const signer = await browserProvider.getSigner();
+                    setConnectedAccount(accounts[0]);
+                    setConnectedSigner(signer);
+                } catch (err) {
+                    console.error("Could not handle account change:", err);
+                }
+            }
+        };
+
+        checkInitialConnection();
+
+        if (window.ethereum) {
+            window.ethereum.on('accountsChanged', handleAccountsChanged);
+        }
+
+        return () => {
+            if (window.ethereum) {
+                window.ethereum.removeListener('accountsChanged', handleAccountsChanged);
+            }
+        };
     }, []);
 
     const connectWallet = async () => {
@@ -389,16 +455,25 @@ const ContractExplorer: React.FC = () => {
             return;
         }
         setIsConnectingWallet(true);
+        setError('');
         try {
-            const browserProvider = new BrowserProvider(window.ethereum);
-            const signer = await browserProvider.getSigner();
-            setConnectedAccount(signer.address);
-            setConnectedSigner(signer);
+            const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+            if (accounts.length > 0) {
+                const browserProvider = new BrowserProvider(window.ethereum);
+                const signer = await browserProvider.getSigner();
+                setConnectedAccount(accounts[0]);
+                setConnectedSigner(signer);
+            }
         } catch (e: any) {
             setError(e.message || 'Failed to connect wallet.');
         } finally {
             setIsConnectingWallet(false);
         }
+    };
+
+    const disconnectWallet = () => {
+        setConnectedAccount(null);
+        setConnectedSigner(null);
     };
 
     const validateContract = async () => {
@@ -508,19 +583,24 @@ const ContractExplorer: React.FC = () => {
                         </div>
                         
                         <div className="flex items-center justify-between gap-4 pt-1">
-                             <div className="flex items-center gap-2">
-                                <button onClick={validateContract} disabled={isValidationLoading} title="Validate Contract Address" className="p-2 bg-gray-700 hover:bg-gray-600 rounded-full text-white transition-colors disabled:opacity-50 disabled:cursor-wait">
-                                    {isValidationLoading ? <SpinnerIcon /> : <ShieldCheckIcon className="w-5 h-5" />}
-                                </button>
-                                {validationStatus === 'success' && <CheckCircleIcon className="w-6 h-6 text-green-400" />}
-                                {validationStatus === 'error' && <XCircleIcon className="w-6 h-6 text-red-400" />}
-                             </div>
-                             <div className="flex items-center gap-2">
-                                <button onClick={connectToContract} title="Connect with ABI" className="p-2 bg-cyan-600 hover:bg-cyan-700 rounded-full text-white transition-colors">
-                                    <PlugIcon className="w-5 h-5" />
-                                </button>
-                                {connectionStatus === 'success' && <CheckCircleIcon className="w-6 h-6 text-green-400" />}
-                                {connectionStatus === 'error' && <XCircleIcon className="w-6 h-6 text-red-400" />}
+                            <button onClick={resetStoredValues} title="Clear Saved Inputs" className="p-2 bg-gray-700 hover:bg-gray-600 rounded-full text-white transition-colors">
+                                <TrashIcon className="w-5 h-5" />
+                            </button>
+                            <div className="flex items-center gap-4">
+                                <div className="flex items-center gap-2">
+                                    <button onClick={validateContract} disabled={isValidationLoading} title="Validate Contract Address" className="p-2 bg-gray-700 hover:bg-gray-600 rounded-full text-white transition-colors disabled:opacity-50 disabled:cursor-wait">
+                                        {isValidationLoading ? <SpinnerIcon /> : <ShieldCheckIcon className="w-5 h-5" />}
+                                    </button>
+                                    {validationStatus === 'success' && <CheckCircleIcon className="w-6 h-6 text-green-400" />}
+                                    {validationStatus === 'error' && <XCircleIcon className="w-6 h-6 text-red-400" />}
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <button onClick={connectToContract} title="Connect with ABI" className="p-2 bg-cyan-600 hover:bg-cyan-700 rounded-full text-white transition-colors">
+                                        <PlugIcon className="w-5 h-5" />
+                                    </button>
+                                    {connectionStatus === 'success' && <CheckCircleIcon className="w-6 h-6 text-green-400" />}
+                                    {connectionStatus === 'error' && <XCircleIcon className="w-6 h-6 text-red-400" />}
+                                </div>
                             </div>
                         </div>
 
@@ -582,8 +662,13 @@ const ContractExplorer: React.FC = () => {
                                                 </div>
                                             ) : <span className="text-gray-400">Wallet not connected</span>}
                                         </div>
-                                        <button onClick={connectWallet} disabled={isConnectingWallet} className="bg-cyan-600 hover:bg-cyan-700 text-white font-semibold py-1.5 px-4 rounded-md text-sm disabled:bg-gray-600 transition-colors">
-                                            {isConnectingWallet ? 'Connecting...' : (connectedAccount ? 'Switch' : 'Connect')}
+                                        <button 
+                                            onClick={connectedAccount ? disconnectWallet : connectWallet} 
+                                            disabled={isConnectingWallet} 
+                                            title={connectedAccount ? 'Disconnect Wallet' : 'Connect Wallet'}
+                                            className="p-2 bg-cyan-600 hover:bg-cyan-700 rounded-full text-white transition-colors disabled:bg-gray-600 disabled:cursor-wait"
+                                        >
+                                            {isConnectingWallet ? <SpinnerIcon className="w-5 h-5" /> : (connectedAccount ? <LinkSlashIcon className="w-5 h-5" /> : <PlugIcon className="w-5 h-5" />)}
                                         </button>
                                     </div>
                                     {writeFunctions.length > 0 ? (
