@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
-import { ethers, BrowserProvider, JsonRpcProvider, Contract, Interface, isAddress, getAddress } from 'ethers';
+import { ethers, BrowserProvider, JsonRpcProvider, Contract, Interface, isAddress, getAddress, ParamType } from 'ethers';
 import type { AbiItem, PastTransaction, FullTransaction, EthersError } from '../types';
-import { ShieldCheckIcon, PlugIcon, EyeIcon, EyeSlashIcon, CheckCircleIcon, XCircleIcon, SpinnerIcon } from './icons';
+import { ShieldCheckIcon, PlugIcon, EyeIcon, EyeSlashIcon, CheckCircleIcon, XCircleIcon, SpinnerIcon, WalletIcon, ServerIcon, ClipboardDocumentListIcon, CodeBracketIcon } from './icons';
 
 declare global {
   interface Window {
@@ -9,22 +9,158 @@ declare global {
   }
 }
 
+const buildInitialState = (param: ParamType): any => {
+    if (param.isTuple()) {
+        const obj: any = {};
+        param.components.forEach(p => {
+            const key = p.name || param.components.indexOf(p).toString();
+            obj[key] = buildInitialState(p);
+        });
+        return obj;
+    }
+    if (param.isArray()) {
+        return [];
+    }
+    if (param.type === 'bool') {
+        return false;
+    }
+    return '';
+};
+
+const AbiInputRenderer: React.FC<{
+    param: ParamType;
+    value: any;
+    onChange: (value: any) => void;
+    path: (string | number)[];
+}> = ({ param, value, onChange, path }) => {
+
+    const addArrayElement = () => {
+        const newArray = [...(value || [])];
+        const newElement = buildInitialState(param.arrayChildren);
+        newArray.push(newElement);
+        onChange(newArray);
+    };
+
+    const removeArrayElement = (index: number) => {
+        const newArray = [...(value || [])];
+        newArray.splice(index, 1);
+        onChange(newArray);
+    };
+
+    const handleChildChange = (index: number, childValue: any) => {
+        const newArray = [...(value || [])];
+        newArray[index] = childValue;
+        onChange(newArray);
+    };
+
+    if (param.isTuple()) {
+        return (
+            <div className="pl-4 border-l-2 border-gray-700 ml-2 space-y-3 pt-2">
+                {param.components.map((p, i) => {
+                     const key = p.name || i.toString();
+                     return (
+                        <div key={key}>
+                            <label className="block text-sm text-gray-400 mb-1">{p.name || `param ${i}`} ({p.type})</label>
+                            <AbiInputRenderer 
+                                param={p} 
+                                value={value?.[key]} 
+                                onChange={(newValue) => {
+                                    const newTuple = { ...(value || {}) };
+                                    newTuple[key] = newValue;
+                                    onChange(newTuple);
+                                }}
+                                path={[...path, key]}
+                            />
+                        </div>
+                    );
+                })}
+            </div>
+        );
+    }
+
+    if (param.isArray()) {
+        return (
+            <div>
+                {(value || []).map((item: any, index: number) => (
+                    <div key={index} className="flex items-start gap-2 mb-2 p-2 border border-gray-700 rounded-md bg-gray-900/50">
+                        <div className="flex-grow">
+                             <AbiInputRenderer 
+                                param={param.arrayChildren} 
+                                value={item} 
+                                onChange={(newValue) => handleChildChange(index, newValue)}
+                                path={[...path, index]}
+                            />
+                        </div>
+                        <button onClick={() => removeArrayElement(index)} className="mt-1 bg-red-600/50 hover:bg-red-600 text-white font-bold p-1 rounded-full text-xs transition-colors">&ndash;</button>
+                    </div>
+                ))}
+                <button onClick={addArrayElement} className="bg-green-600/50 hover:bg-green-600 text-white font-bold py-1 px-3 rounded-md text-sm transition-colors">+ Add Element</button>
+            </div>
+        );
+    }
+    
+    if (param.type === 'bool') {
+        return (
+             <select
+                value={value ? 'true' : 'false'}
+                onChange={(e) => onChange(e.target.value === 'true')}
+                className="w-full bg-gray-800 border border-gray-600 rounded-md px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-cyan-500"
+            >
+                <option value="true">true</option>
+                <option value="false">false</option>
+            </select>
+        )
+    }
+
+    return (
+        <input
+            type={param.type.startsWith('uint') || param.type.startsWith('int') ? 'number' : 'text'}
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            placeholder={`${param.type}`}
+            className="w-full bg-gray-800 border border-gray-600 rounded-md px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-cyan-500"
+        />
+    );
+};
+
+
 const FunctionForm: React.FC<{
   abiItem: AbiItem;
   contract: Contract;
-  provider: BrowserProvider | JsonRpcProvider;
   onTransactionSent: (tx: PastTransaction) => void;
-}> = ({ abiItem, contract, provider, onTransactionSent }) => {
-  const [inputs, setInputs] = useState<string[]>(Array(abiItem.inputs.length).fill(''));
+  connectedSigner: ethers.Signer | null;
+}> = ({ abiItem, contract, onTransactionSent, connectedSigner }) => {
+  const [inputs, setInputs] = useState<any[]>(() => abiItem.inputs.map(buildInitialState));
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState<string>('');
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const isWrite = !abiItem.constant;
 
-  const handleInputChange = (index: number, value: string) => {
-    const newInputs = [...inputs];
-    newInputs[index] = value;
-    setInputs(newInputs);
+  useEffect(() => {
+    setInputs(abiItem.inputs.map(buildInitialState));
+    setResult(null);
+    setError('');
+  }, [abiItem]);
+
+  const handleInputChange = useCallback((index: number, value: any) => {
+    setInputs(currentInputs => {
+        const newInputs = [...currentInputs];
+        newInputs[index] = value;
+        return newInputs;
+    });
+  }, []);
+
+  const prepareArgsForEthers = (params: readonly ParamType[], values: any[]): any[] => {
+    return params.map((param, index) => {
+        const value = values[index];
+        if (param.isTuple()) {
+            return prepareArgsForEthers(param.components, Object.values(value));
+        }
+        if (param.isArray()) {
+            return value.map((item: any) => prepareArgsForEthers([param.arrayChildren], [item])[0]);
+        }
+        return value;
+    });
   };
 
   const execute = async () => {
@@ -33,73 +169,57 @@ const FunctionForm: React.FC<{
     setResult(null);
 
     try {
-      const args = inputs.map((input, i) => {
-          if (abiItem.inputs[i].type.includes('[]')) {
-              try {
-                  return JSON.parse(input);
-              } catch (e) {
-                  throw new Error(`Input for ${abiItem.inputs[i].name} must be a valid JSON array string.`);
-              }
-          }
-          return input;
-      });
-
-      if (isWrite) {
-        if (!window.ethereum) {
-          throw new Error('Wallet not found. Please install MetaMask or a similar wallet.');
-        }
-        const browserProvider = new BrowserProvider(window.ethereum);
-        const signer = await browserProvider.getSigner();
-        const contractWithSigner = contract.connect(signer) as Contract;
-        const tx = await (contractWithSigner[abiItem.name] as any)(...args);
-        setResult(`Transaction sent! Hash: ${tx.hash}`);
-        onTransactionSent({ hash: tx.hash, method: abiItem.name, timestamp: Date.now() });
-      } else {
-        const callResult = await (contract[abiItem.name] as any)(...args);
+        const args = prepareArgsForEthers(abiItem.inputs, inputs);
         
-        const replacer = (_key: string, value: any) =>
-          typeof value === "bigint" ? value.toString() : value;
-
-        if (typeof callResult !== 'object' || callResult === null) {
-          setResult(callResult.toString());
+        if (isWrite) {
+            if (!connectedSigner) {
+            throw new Error('Wallet not connected. Please connect your wallet in the "Write" tab.');
+            }
+            const contractWithSigner = contract.connect(connectedSigner) as Contract;
+            const tx = await (contractWithSigner[abiItem.name] as any)(...args);
+            setResult(`Transaction sent! Hash: ${tx.hash}`);
+            onTransactionSent({ hash: tx.hash, method: abiItem.name, timestamp: Date.now() });
         } else {
-          setResult(JSON.stringify(callResult, replacer, 2));
+            const callResult = await (contract[abiItem.name] as any)(...args);
+            const replacer = (_key: string, value: any) =>
+            typeof value === "bigint" ? value.toString() : value;
+
+            if (typeof callResult !== 'object' || callResult === null) {
+            setResult(callResult.toString());
+            } else {
+            setResult(JSON.stringify(callResult, replacer, 2));
+            }
         }
-      }
     } catch (e: any) {
-      const err = e as EthersError;
-      console.error(err);
-      setError(err.reason || err.message || 'An unknown error occurred.');
+        const err = e as EthersError;
+        console.error(err);
+        setError(err.reason || err.message || 'An unknown error occurred.');
     } finally {
-      setIsLoading(false);
+        setIsLoading(false);
     }
   };
 
   return (
-    <div className="bg-gray-800 p-4 rounded-lg mb-4 border border-gray-700">
-      <h4 className="font-semibold text-lg mb-3 flex items-center">
-        {abiItem.name}
-        <span className={`ml-2 text-xs font-mono px-2 py-1 rounded-full ${isWrite ? 'bg-orange-500/20 text-orange-300' : 'bg-green-500/20 text-green-300'}`}>
-          {isWrite ? 'write' : 'read'}
-        </span>
-      </h4>
-      {abiItem.inputs.map((input, i) => (
-        <div key={i} className="mb-2">
-          <label className="block text-sm text-gray-400 mb-1">{input.name} ({input.type})</label>
-          <input
-            type="text"
-            value={inputs[i]}
-            onChange={(e) => handleInputChange(i, e.target.value)}
-            placeholder={`${input.type}`}
-            className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-cyan-500"
-          />
+    <div className="space-y-4">
+        <div className="space-y-4">
+            {abiItem.inputs.map((input, i) => (
+                <div key={i}>
+                    <label className="block text-gray-300 mb-1 font-semibold">{input.name} <span className="text-gray-400 font-mono text-xs">({input.type})</span></label>
+                    <AbiInputRenderer 
+                        param={input}
+                        value={inputs[i]}
+                        onChange={(value) => handleInputChange(i, value)}
+                        path={[i]}
+                    />
+                </div>
+            ))}
         </div>
-      ))}
       <button
         onClick={execute}
         disabled={isLoading}
-        className={`w-full mt-3 px-4 py-2 rounded-md font-semibold transition-colors ${isWrite ? 'bg-orange-500 hover:bg-orange-600' : 'bg-cyan-500 hover:bg-cyan-600'} text-white disabled:bg-gray-600 disabled:cursor-not-allowed`}
+        className={`w-full mt-4 px-4 py-2 rounded-md font-semibold transition-colors ${isWrite ? 'bg-orange-600 hover:bg-orange-700' : 'bg-cyan-600 hover:bg-cyan-700'} text-white disabled:bg-gray-600 disabled:cursor-not-allowed flex items-center justify-center`}
       >
+        {isLoading && <SpinnerIcon className="w-5 h-5 mr-2" />}
         {isLoading ? 'Executing...' : (isWrite ? 'Send Transaction' : 'Query')}
       </button>
       {error && <pre className="mt-3 bg-red-900/50 text-red-300 p-3 rounded-md text-xs whitespace-pre-wrap break-all">{error}</pre>}
@@ -120,7 +240,6 @@ const ContractExplorer: React.FC = () => {
     const [pastTxs, setPastTxs] = useState<PastTransaction[]>([]);
     const [selectedTx, setSelectedTx] = useState<FullTransaction | null>(null);
     const [isTxModalOpen, setIsTxModalOpen] = useState<boolean>(false);
-    const [isWalletAvailable, setIsWalletAvailable] = useState<boolean>(false);
     
     const [bytecode, setBytecode] = useState<string>('');
     const [isValidationLoading, setIsValidationLoading] = useState<boolean>(false);
@@ -128,21 +247,52 @@ const ContractExplorer: React.FC = () => {
     
     const [connectionStatus, setConnectionStatus] = useState<'idle' | 'success' | 'error'>('idle');
     const [validationStatus, setValidationStatus] = useState<'idle' | 'success' | 'error'>('idle');
-    const [isBytecodeVisible, setIsBytecodeVisible] = useState<boolean>(false);
-
+    
+    const [activeTab, setActiveTab] = useState<'read' | 'write' | 'bytecode'>('read');
+    const [selectedReadFn, setSelectedReadFn] = useState<string>('');
+    const [selectedWriteFn, setSelectedWriteFn] = useState<string>('');
+    const [connectedAccount, setConnectedAccount] = useState<string | null>(null);
+    const [connectedSigner, setConnectedSigner] = useState<ethers.Signer | null>(null);
+    const [isConnectingWallet, setIsConnectingWallet] = useState<boolean>(false);
 
     useEffect(() => {
-        if (typeof window.ethereum !== 'undefined') {
-            setIsWalletAvailable(true);
-        }
+        const checkConnection = async () => {
+            if (window.ethereum) {
+                const accounts = await window.ethereum.request({ method: 'eth_accounts' });
+                if (accounts.length > 0) {
+                    const browserProvider = new BrowserProvider(window.ethereum);
+                    const signer = await browserProvider.getSigner();
+                    setConnectedAccount(accounts[0]);
+                    setConnectedSigner(signer);
+                }
+            }
+        };
+        checkConnection();
     }, []);
+
+    const connectWallet = async () => {
+        if (!window.ethereum) {
+            setError('Wallet not found. Please install MetaMask or a similar wallet.');
+            return;
+        }
+        setIsConnectingWallet(true);
+        try {
+            const browserProvider = new BrowserProvider(window.ethereum);
+            const signer = await browserProvider.getSigner();
+            setConnectedAccount(signer.address);
+            setConnectedSigner(signer);
+        } catch (e: any) {
+            setError(e.message || 'Failed to connect wallet.');
+        } finally {
+            setIsConnectingWallet(false);
+        }
+    };
 
     const validateContract = async () => {
         setIsValidationLoading(true);
         setValidationStatus('idle');
         setValidationError('');
         setBytecode('');
-        setIsBytecodeVisible(false);
         try {
             if (!rpcUrl) throw new Error('RPC URL is required.');
             if (!isAddress(contractAddress)) throw new Error('Invalid contract address.');
@@ -166,6 +316,8 @@ const ContractExplorer: React.FC = () => {
         setContract(null);
         setAbiItems([]);
         setConnectionStatus('idle');
+        setSelectedReadFn('');
+        setSelectedWriteFn('');
         try {
             if (!rpcUrl) throw new Error('RPC URL is required.');
             if (!isAddress(contractAddress)) throw new Error('Invalid contract address.');
@@ -182,6 +334,7 @@ const ContractExplorer: React.FC = () => {
             setContract(newContract);
             setAbiItems(functions);
             setConnectionStatus('success');
+            setActiveTab('read'); 
         } catch (e: any) {
             setError(e.message || 'Failed to connect to contract.');
             setConnectionStatus('error');
@@ -205,34 +358,45 @@ const ContractExplorer: React.FC = () => {
     };
 
     const { readFunctions, writeFunctions } = useMemo(() => {
-        return {
-            readFunctions: abiItems.filter(item => item.constant),
-            writeFunctions: abiItems.filter(item => !item.constant),
-        };
-    }, [abiItems]);
+        const reads = abiItems.filter(item => item.constant);
+        const writes = abiItems.filter(item => !item.constant);
+        if (reads.length > 0 && !selectedReadFn) setSelectedReadFn(reads[0].format());
+        if (writes.length > 0 && !selectedWriteFn) setSelectedWriteFn(writes[0].format());
+        return { readFunctions: reads, writeFunctions: writes };
+    }, [abiItems, connectionStatus]); // Rerun when connection status changes
+
+    const selectedReadAbiItem = useMemo(() => readFunctions.find(f => f.format() === selectedReadFn), [readFunctions, selectedReadFn]);
+    const selectedWriteAbiItem = useMemo(() => writeFunctions.find(f => f.format() === selectedWriteFn), [writeFunctions, selectedWriteFn]);
 
     return (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-            <div className="md:col-span-1">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div className="md:col-span-1 space-y-6">
                 <div className="bg-gray-800 p-4 rounded-lg border border-gray-700 sticky top-24">
-                    <h2 className="text-xl font-bold mb-4 text-white">Connection</h2>
                     <div className="space-y-4">
-                        <div>
-                            <label className="block text-sm text-gray-400 mb-1">RPC Endpoint</label>
-                            <input value={rpcUrl} onChange={e => { setRpcUrl(e.target.value); setValidationStatus('idle'); setConnectionStatus('idle'); setBytecode(''); }} className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-cyan-500" />
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <div className="relative sm:col-span-2">
+                                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                    <ServerIcon className="h-5 w-5 text-gray-400" />
+                                </div>
+                                <input placeholder="RPC Endpoint" title="RPC Endpoint" value={rpcUrl} onChange={e => { setRpcUrl(e.target.value); setValidationStatus('idle'); setConnectionStatus('idle'); setBytecode(''); }} className="w-full bg-gray-900 border border-gray-700 rounded-md pl-10 pr-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-cyan-500" />
+                            </div>
+                            <div className="relative sm:col-span-2">
+                                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                    <ClipboardDocumentListIcon className="h-5 w-5 text-gray-400" />
+                                </div>
+                                <input placeholder="Contract Address" title="Contract Address" value={contractAddress} onChange={e => { setContractAddress(e.target.value); setValidationStatus('idle'); setConnectionStatus('idle'); setBytecode(''); }} className="w-full bg-gray-900 border border-gray-700 rounded-md pl-10 pr-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-cyan-500" />
+                            </div>
                         </div>
-                        <div>
-                            <label className="block text-sm text-gray-400 mb-1">Contract Address</label>
-                            <input value={contractAddress} onChange={e => { setContractAddress(e.target.value); setValidationStatus('idle'); setConnectionStatus('idle'); setBytecode(''); }} className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-cyan-500" />
-                        </div>
-                        <div>
-                            <label className="block text-sm text-gray-400 mb-1">Contract ABI (JSON)</label>
-                            <textarea value={abi} onChange={e => { setAbi(e.target.value); setConnectionStatus('idle'); }} rows={6} className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-cyan-500 font-mono text-xs"></textarea>
+                         <div className="relative">
+                            <div className="absolute top-3 left-0 pl-3 flex items-center pointer-events-none">
+                               <CodeBracketIcon className="h-5 w-5 text-gray-400" />
+                            </div>
+                            <textarea placeholder="Contract ABI (JSON)" title="Contract ABI (JSON)" value={abi} onChange={e => { setAbi(e.target.value); setConnectionStatus('idle'); }} rows={6} className="w-full bg-gray-900 border border-gray-700 rounded-md pl-10 pr-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-cyan-500 font-mono text-xs"></textarea>
                         </div>
                         
-                        <div className="flex items-center gap-4 pt-2">
+                        <div className="flex items-center justify-between gap-4 pt-1">
                              <div className="flex items-center gap-2">
-                                <button onClick={validateContract} disabled={isValidationLoading} title="Validate Contract Address" className="p-2 bg-gray-600 hover:bg-gray-700 rounded-full text-white transition-colors disabled:bg-gray-500 disabled:cursor-wait">
+                                <button onClick={validateContract} disabled={isValidationLoading} title="Validate Contract Address" className="p-2 bg-gray-700 hover:bg-gray-600 rounded-full text-white transition-colors disabled:opacity-50 disabled:cursor-wait">
                                     {isValidationLoading ? <SpinnerIcon /> : <ShieldCheckIcon className="w-5 h-5" />}
                                 </button>
                                 {validationStatus === 'success' && <CheckCircleIcon className="w-6 h-6 text-green-400" />}
@@ -245,31 +409,14 @@ const ContractExplorer: React.FC = () => {
                                 {connectionStatus === 'success' && <CheckCircleIcon className="w-6 h-6 text-green-400" />}
                                 {connectionStatus === 'error' && <XCircleIcon className="w-6 h-6 text-red-400" />}
                             </div>
-                            {bytecode && (
-                                <button onClick={() => setIsBytecodeVisible(!isBytecodeVisible)} title={isBytecodeVisible ? "Hide Bytecode" : "Show Bytecode"} className="p-2 bg-gray-600 hover:bg-gray-700 rounded-full text-white transition-colors ml-auto">
-                                    {isBytecodeVisible ? <EyeSlashIcon className="w-5 h-5" /> : <EyeIcon className="w-5 h-5" />}
-                                </button>
-                            )}
                         </div>
 
                         {error && <p className="text-red-400 text-sm mt-2">{error}</p>}
                         {validationError && <p className="text-red-400 text-sm mt-2">{validationError}</p>}
-                        
-                        {isBytecodeVisible && bytecode && (
-                            <div className="mt-4">
-                                <label className="block text-sm text-gray-400 mb-1">Bytecode</label>
-                                <textarea
-                                    readOnly
-                                    value={bytecode}
-                                    rows={5}
-                                    className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 text-green-300 font-mono text-xs"
-                                />
-                            </div>
-                        )}
                     </div>
                 </div>
 
-                <div className="bg-gray-800 p-4 rounded-lg border border-gray-700 mt-8 sticky top-[28rem]">
+                <div className="bg-gray-800 p-4 rounded-lg border border-gray-700 sticky top-[33rem]">
                   <h3 className="text-lg font-bold mb-3">Transaction History</h3>
                   <div className="max-h-48 overflow-y-auto">
                     {pastTxs.length === 0 ? <p className="text-gray-400 text-sm">No transactions yet.</p> : (
@@ -289,27 +436,68 @@ const ContractExplorer: React.FC = () => {
             </div>
             <div className="md:col-span-2">
                 {contract && provider && connectionStatus === 'success' ? (
-                    <div>
-                        <div className="mb-8">
-                            <h3 className="text-xl font-bold mb-4 border-b border-gray-700 pb-2 text-green-300">Read Functions</h3>
-                            {readFunctions.length > 0 ? readFunctions.map(item => <FunctionForm key={item.name} abiItem={item} contract={contract} provider={provider} onTransactionSent={handleTransactionSent} />) : <p className="text-gray-400">No read functions found.</p>}
+                    <div className="bg-gray-800 rounded-lg border border-gray-700">
+                        <div className="flex border-b border-gray-700">
+                           <TabButton title="Read" onClick={() => setActiveTab('read')} isActive={activeTab === 'read'} />
+                           <TabButton title="Write" onClick={() => setActiveTab('write')} isActive={activeTab === 'write'} />
+                           <TabButton title="Bytecode" onClick={() => setActiveTab('bytecode')} isActive={activeTab === 'bytecode'} disabled={!bytecode} />
                         </div>
-                        <div>
-                            <h3 className="text-xl font-bold mb-4 border-b border-gray-700 pb-2 text-orange-300">Write Functions</h3>
-                            {!isWalletAvailable && (
-                                <div className="bg-orange-900/50 text-orange-300 p-3 rounded-md text-sm mb-4">
-                                    <strong>Wallet Required:</strong> To send transactions (write operations), you need a browser wallet like MetaMask installed and enabled.
+
+                        <div className="p-6">
+                            {activeTab === 'read' && (
+                                <div>
+                                    {readFunctions.length > 0 ? (
+                                        <>
+                                            <select value={selectedReadFn} onChange={e => setSelectedReadFn(e.target.value)} className="w-full bg-gray-900 border border-gray-700 rounded-md px-3 py-2 mb-6 text-white focus:outline-none focus:ring-2 focus:ring-cyan-500 font-mono">
+                                                {readFunctions.map(fn => <option key={fn.format()} value={fn.format()}>{fn.name}</option>)}
+                                            </select>
+                                            {selectedReadAbiItem && <FunctionForm abiItem={selectedReadAbiItem} contract={contract} onTransactionSent={handleTransactionSent} connectedSigner={null} />}
+                                        </>
+                                    ) : <p className="text-gray-400">No read functions found in ABI.</p>}
                                 </div>
                             )}
-                            {writeFunctions.length > 0 ? writeFunctions.map(item => <FunctionForm key={item.name} abiItem={item} contract={contract} provider={provider} onTransactionSent={handleTransactionSent} />) : <p className="text-gray-400">No write functions found.</p>}
+
+                             {activeTab === 'write' && (
+                                <div>
+                                    <div className="flex justify-between items-center mb-6 p-3 bg-gray-900/50 rounded-lg border border-gray-700">
+                                        <div className="flex items-center gap-3">
+                                            <WalletIcon className={`w-6 h-6 ${connectedAccount ? 'text-green-400' : 'text-gray-500'}`} />
+                                            {connectedAccount ? (
+                                                <div className="text-sm">
+                                                    <span className="text-gray-400">Connected: </span>
+                                                    <span className="font-mono text-green-300">{connectedAccount.slice(0, 6)}...{connectedAccount.slice(-4)}</span>
+                                                </div>
+                                            ) : <span className="text-gray-400">Wallet not connected</span>}
+                                        </div>
+                                        <button onClick={connectWallet} disabled={isConnectingWallet} className="bg-cyan-600 hover:bg-cyan-700 text-white font-semibold py-1.5 px-4 rounded-md text-sm disabled:bg-gray-600 transition-colors">
+                                            {isConnectingWallet ? 'Connecting...' : (connectedAccount ? 'Switch' : 'Connect')}
+                                        </button>
+                                    </div>
+                                    {writeFunctions.length > 0 ? (
+                                        <>
+                                            <select value={selectedWriteFn} onChange={e => setSelectedWriteFn(e.target.value)} className="w-full bg-gray-900 border border-gray-700 rounded-md px-3 py-2 mb-6 text-white focus:outline-none focus:ring-2 focus:ring-cyan-500 font-mono">
+                                                {writeFunctions.map(fn => <option key={fn.format()} value={fn.format()}>{fn.name}</option>)}
+                                            </select>
+                                            {selectedWriteAbiItem && <FunctionForm abiItem={selectedWriteAbiItem} contract={contract} onTransactionSent={handleTransactionSent} connectedSigner={connectedSigner} />}
+                                        </>
+                                    ) : <p className="text-gray-400">No write functions found in ABI.</p>}
+                                </div>
+                            )}
+
+                            {activeTab === 'bytecode' && (
+                                <div>
+                                    <h3 className="text-xl font-bold mb-2">Contract Bytecode</h3>
+                                    <textarea readOnly value={bytecode} rows={15} className="w-full bg-gray-900 border-gray-700 rounded-md p-3 text-green-300 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-cyan-500" />
+                                </div>
+                            )}
                         </div>
                     </div>
-                ) : <div className="flex items-center justify-center h-full text-gray-500">Connect to a contract to see its functions.</div>}
+                ) : <div className="flex items-center justify-center h-64 text-gray-500 p-8 bg-gray-800 rounded-lg border border-dashed border-gray-700">Connect to a contract to begin.</div>}
             </div>
             
             {isTxModalOpen && selectedTx && (
-                <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50" onClick={() => setIsTxModalOpen(false)}>
-                    <div className="bg-gray-800 rounded-lg p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto border border-cyan-500" onClick={e => e.stopPropagation()}>
+                <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50" onClick={() => setIsTxModalOpen(false)}>
+                    <div className="bg-gray-800 rounded-lg p-6 w-full max-w-3xl max-h-[90vh] overflow-y-auto border border-cyan-500/50" onClick={e => e.stopPropagation()}>
                         <h2 className="text-xl font-bold mb-4">Transaction Details</h2>
                         <pre className="bg-gray-900 p-4 rounded-md text-xs text-gray-300 whitespace-pre-wrap break-all">
                             {JSON.stringify(selectedTx, (key, value) => typeof value === 'bigint' ? value.toString() : value, 2)}
@@ -322,5 +510,20 @@ const ContractExplorer: React.FC = () => {
         </div>
     );
 };
+
+const TabButton: React.FC<{ title: string; onClick: () => void; isActive: boolean; disabled?: boolean }> = ({ title, onClick, isActive, disabled }) => (
+    <button
+        onClick={onClick}
+        disabled={disabled}
+        className={`px-5 py-3 font-semibold text-sm transition-colors focus:outline-none focus-visible:bg-gray-700 ${
+            isActive
+                ? 'border-b-2 border-cyan-400 text-white'
+                : 'text-gray-400 hover:bg-gray-700/50 border-b-2 border-transparent'
+        } ${disabled ? 'text-gray-600 cursor-not-allowed hover:bg-transparent' : ''}`}
+    >
+        {title}
+    </button>
+);
+
 
 export default ContractExplorer;
