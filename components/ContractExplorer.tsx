@@ -1,4 +1,3 @@
-
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import { ethers, BrowserProvider, JsonRpcProvider, Contract, Interface, isAddress, getAddress } from 'ethers';
 import type { AbiItem, PastTransaction, FullTransaction, EthersError } from '../types';
@@ -57,13 +56,14 @@ const FunctionForm: React.FC<{
         onTransactionSent({ hash: tx.hash, method: abiItem.name, timestamp: Date.now() });
       } else {
         const callResult = await (contract[abiItem.name] as any)(...args);
-        if (typeof callResult === 'object' && callResult !== null && callResult._isBigInt) {
+        
+        const replacer = (_key: string, value: any) =>
+          typeof value === "bigint" ? value.toString() : value;
+
+        if (typeof callResult !== 'object' || callResult === null) {
           setResult(callResult.toString());
-        } else if (Array.isArray(callResult)) {
-            setResult(JSON.stringify(callResult.map(item => typeof item === 'bigint' ? item.toString() : item), null, 2));
-        }
-        else {
-          setResult(JSON.stringify(callResult, null, 2));
+        } else {
+          setResult(JSON.stringify(callResult, replacer, 2));
         }
       }
     } catch (e: any) {

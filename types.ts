@@ -1,4 +1,3 @@
-
 import type { InterfaceAbi, FunctionFragment, Result, TransactionResponse, TransactionReceipt } from 'ethers';
 
 export interface AbiItem extends FunctionFragment {}
@@ -25,7 +24,7 @@ export type EthersError = {
   data?: any;
 };
 
-// Fix: Add missing ChatMessage type used in Chatbot.tsx
+// Fix: Add missing ChatMessage type for the Chatbot component
 export interface ChatMessage {
   role: 'user' | 'model';
   text: string;
