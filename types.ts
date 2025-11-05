@@ -24,7 +24,7 @@ export type EthersError = {
   data?: any;
 };
 
-// Fix: Added missing ChatMessage type for the chatbot component.
+// Fix: Add ChatMessage type definition
 export interface ChatMessage {
   role: 'user' | 'model';
   text: string;

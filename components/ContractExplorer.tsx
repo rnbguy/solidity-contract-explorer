@@ -257,10 +257,40 @@ const FunctionForm: React.FC<{
         const args = prepareArgsForEthers(abiItem.inputs, inputs);
         
         if (isWrite) {
-            if (!connectedSigner) {
-            throw new Error('Wallet not connected. Please connect your wallet in the "Write" tab.');
+            if (!connectedSigner || !window.ethereum) {
+                throw new Error('Wallet not connected. Please connect your wallet in the "Write" tab.');
             }
-            const contractWithSigner = contract.connect(connectedSigner) as Contract;
+
+            const walletProvider = new BrowserProvider(window.ethereum);
+            const walletNetwork = await walletProvider.getNetwork();
+            const rpcProvider = contract.provider as JsonRpcProvider;
+            const rpcNetwork = await rpcProvider.getNetwork();
+
+            if (walletNetwork.chainId !== rpcNetwork.chainId) {
+                const rpcChainIdHex = `0x${rpcNetwork.chainId.toString(16)}`;
+                try {
+                    await walletProvider.send('wallet_switchEthereumChain', [{ chainId: rpcChainIdHex }]);
+                } catch (switchError: any) {
+                    if (switchError.code === 4902) { // Chain not added
+                        try {
+                            await walletProvider.send('wallet_addEthereumChain', [{
+                                chainId: rpcChainIdHex,
+                                chainName: `Custom RPC (${rpcNetwork.chainId})`,
+                                rpcUrls: [rpcUrl],
+                                nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+                            }]);
+                        } catch (addError: any) {
+                            throw new Error(`Failed to add network to wallet: ${addError.message || 'User rejected request.'}`);
+                        }
+                    } else {
+                        throw new Error(`Failed to switch network in wallet: ${switchError.message || 'User rejected request.'}`);
+                    }
+                }
+            }
+
+            // Get a fresh signer after potentially switching networks
+            const freshSigner = await walletProvider.getSigner();
+            const contractWithSigner = contract.connect(freshSigner) as Contract;
             const tx = await (contractWithSigner[abiItem.name] as any)(...args);
             setResult(`Transaction sent! Hash: ${tx.hash}`);
             onTransactionSent({ hash: tx.hash, method: abiItem.name, timestamp: Date.now() });

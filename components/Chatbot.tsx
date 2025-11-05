@@ -1,7 +1,6 @@
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { GoogleGenAI, Chat } from '@google/genai';
-// Fix: Corrected import to use ChatMessage type from the central types file.
 import type { ChatMessage } from '../types';
 
 const Chatbot: React.FC = () => {
