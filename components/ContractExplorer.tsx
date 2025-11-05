@@ -1,7 +1,8 @@
+
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import { ethers, BrowserProvider, JsonRpcProvider, Contract, Interface, isAddress, getAddress, ParamType } from 'ethers';
 import type { AbiItem, PastTransaction, FullTransaction, EthersError } from '../types';
-import { ShieldCheckIcon, PlugIcon, EyeIcon, EyeSlashIcon, CheckCircleIcon, XCircleIcon, SpinnerIcon, WalletIcon, ServerIcon, ClipboardDocumentListIcon, CodeBracketIcon } from './icons';
+import { ShieldCheckIcon, PlugIcon, EyeIcon, EyeSlashIcon, CheckCircleIcon, XCircleIcon, SpinnerIcon, WalletIcon, ServerIcon, ClipboardDocumentListIcon, CodeBracketIcon, ClipboardIcon, ClipboardCheckIcon, MinusIcon, PlusIcon, ArrowRightCircleIcon, PaperAirplaneIcon } from './icons';
 
 declare global {
   interface Window {
@@ -91,10 +92,14 @@ const AbiInputRenderer: React.FC<{
                                 path={[...path, index]}
                             />
                         </div>
-                        <button onClick={() => removeArrayElement(index)} className="mt-1 bg-red-600/50 hover:bg-red-600 text-white font-bold p-1 rounded-full text-xs transition-colors">&ndash;</button>
+                        <button onClick={() => removeArrayElement(index)} className="mt-1 p-1 text-red-400 hover:text-white hover:bg-red-600/50 rounded-full transition-colors" title="Remove Element">
+                            <MinusIcon className="w-4 h-4" />
+                        </button>
                     </div>
                 ))}
-                <button onClick={addArrayElement} className="bg-green-600/50 hover:bg-green-600 text-white font-bold py-1 px-3 rounded-md text-sm transition-colors">+ Add Element</button>
+                <button onClick={addArrayElement} className="mt-2 p-1.5 bg-gray-700 hover:bg-gray-600 text-green-400 rounded-md transition-colors" title="Add Element">
+                    <PlusIcon className="w-5 h-5" />
+                </button>
             </div>
         );
     }
@@ -129,11 +134,15 @@ const FunctionForm: React.FC<{
   contract: Contract;
   onTransactionSent: (tx: PastTransaction) => void;
   connectedSigner: ethers.Signer | null;
-}> = ({ abiItem, contract, onTransactionSent, connectedSigner }) => {
+  contractAddress: string;
+  rpcUrl: string;
+}> = ({ abiItem, contract, onTransactionSent, connectedSigner, contractAddress, rpcUrl }) => {
   const [inputs, setInputs] = useState<any[]>(() => abiItem.inputs.map(buildInitialState));
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState<string>('');
   const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [castCommand, setCastCommand] = useState('');
+  const [copied, setCopied] = useState(false);
   const isWrite = !abiItem.constant;
 
   useEffect(() => {
@@ -141,6 +150,57 @@ const FunctionForm: React.FC<{
     setResult(null);
     setError('');
   }, [abiItem]);
+
+  const formatCastArg = useCallback((param: ParamType, value: any): string => {
+    if (value === undefined || value === null || value === '') {
+        // Provide a default value based on type for the command
+        if (param.type.startsWith('uint') || param.type.startsWith('int')) return '0';
+        if (param.type === 'bool') return 'false';
+        if (param.type === 'address') return '0x0000000000000000000000000000000000000000';
+        return '""';
+    }
+
+    if (param.isTuple()) {
+        const values = param.components.map(p => {
+            const key = p.name || param.components.indexOf(p).toString();
+            return formatCastArg(p, value[key]);
+        });
+        return `(${values.join(',')})`;
+    }
+    if (param.isArray()) {
+        const items = (value as any[]).map(item => formatCastArg(param.arrayChildren, item));
+        return `[${items.join(',')}]`;
+    }
+    if (param.type === 'string' || param.type === 'bytes') {
+        return `"${value.toString().replace(/"/g, '\\"')}"`;
+    }
+    
+    return value.toString();
+  }, []);
+
+  useEffect(() => {
+    try {
+        const argsString = abiItem.inputs
+        .map((input, index) => formatCastArg(input, inputs[index]))
+        .join(' ');
+
+        const commandType = isWrite ? 'send' : 'call';
+        const functionSignature = `${abiItem.name}(${abiItem.inputs.map(i => i.type).join(',')})`;
+        
+        let command = `cast ${commandType} ${contractAddress || '<CONTRACT_ADDRESS>'} "${functionSignature}" ${argsString}`;
+        
+        if (rpcUrl) {
+            command += ` --rpc-url ${rpcUrl}`;
+        }
+        if (isWrite && connectedSigner) {
+            command += ` --from ${connectedSigner.address}`;
+        }
+
+        setCastCommand(command);
+    } catch (e) {
+        setCastCommand("Error generating command.");
+    }
+  }, [inputs, abiItem, contractAddress, isWrite, rpcUrl, connectedSigner, formatCastArg]);
 
   const handleInputChange = useCallback((index: number, value: any) => {
     setInputs(currentInputs => {
@@ -153,12 +213,36 @@ const FunctionForm: React.FC<{
   const prepareArgsForEthers = (params: readonly ParamType[], values: any[]): any[] => {
     return params.map((param, index) => {
         const value = values[index];
+
         if (param.isTuple()) {
-            return prepareArgsForEthers(param.components, Object.values(value));
+            // Ensure components are ordered correctly according to the ABI definition
+            const tupleValues = param.components.map(p => {
+                const key = p.name || param.components.indexOf(p).toString();
+                // Recursively prepare each component of the tuple
+                return prepareArgsForEthers([p], [value[key]])[0];
+            });
+            return tupleValues;
         }
+
         if (param.isArray()) {
-            return value.map((item: any) => prepareArgsForEthers([param.arrayChildren], [item])[0]);
+            if (!Array.isArray(value)) return [];
+            // Recursively prepare each element of the array
+            return value.map((item: any) => {
+                return prepareArgsForEthers([param.arrayChildren], [item])[0];
+            });
         }
+        
+        // Convert number-like strings to BigInt for ethers
+        if ((param.type.startsWith('uint') || param.type.startsWith('int')) && value !== '' && value != null) {
+            try {
+                return BigInt(value);
+            } catch (e) {
+                // Let ethers throw a more specific error if conversion fails
+                console.error(`Failed to convert value "${value}" to BigInt for type ${param.type}`);
+                return value;
+            }
+        }
+
         return value;
     });
   };
@@ -214,23 +298,52 @@ const FunctionForm: React.FC<{
                 </div>
             ))}
         </div>
-      <button
-        onClick={execute}
-        disabled={isLoading}
-        className={`w-full mt-4 px-4 py-2 rounded-md font-semibold transition-colors ${isWrite ? 'bg-orange-600 hover:bg-orange-700' : 'bg-cyan-600 hover:bg-cyan-700'} text-white disabled:bg-gray-600 disabled:cursor-not-allowed flex items-center justify-center`}
-      >
-        {isLoading && <SpinnerIcon className="w-5 h-5 mr-2" />}
-        {isLoading ? 'Executing...' : (isWrite ? 'Send Transaction' : 'Query')}
-      </button>
+        <button
+            onClick={execute}
+            disabled={isLoading}
+            title={isLoading ? 'Executing...' : (isWrite ? 'Send Transaction' : 'Query')}
+            className={`w-full mt-4 p-2.5 rounded-md font-semibold transition-colors ${isWrite ? 'bg-orange-600 hover:bg-orange-700' : 'bg-cyan-600 hover:bg-cyan-700'} text-white disabled:bg-gray-600 disabled:cursor-not-allowed flex items-center justify-center`}
+        >
+            {isLoading ? (
+                <SpinnerIcon className="w-6 h-6" />
+            ) : isWrite ? (
+                <PaperAirplaneIcon className="w-6 h-6" />
+            ) : (
+                <ArrowRightCircleIcon className="w-6 h-6" />
+            )}
+        </button>
+
       {error && <pre className="mt-3 bg-red-900/50 text-red-300 p-3 rounded-md text-xs whitespace-pre-wrap break-all">{error}</pre>}
       {result && <pre className="mt-3 bg-gray-900 text-gray-300 p-3 rounded-md text-xs whitespace-pre-wrap break-all">{result}</pre>}
+
+      {castCommand && (
+          <div className="mt-4">
+            <label className="block text-sm font-medium text-gray-400 mb-1">Equivalent `cast` command:</label>
+            <div className="relative">
+              <pre className="bg-gray-900 text-cyan-300 p-3 pr-10 rounded-md text-xs whitespace-pre-wrap break-all font-mono">
+                {castCommand}
+              </pre>
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(castCommand);
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 2000);
+                }}
+                className="absolute top-2 right-2 p-1.5 text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-md"
+                title="Copy to clipboard"
+              >
+                {copied ? <ClipboardCheckIcon className="w-4 h-4" /> : <ClipboardIcon className="w-4 h-4" />}
+              </button>
+            </div>
+          </div>
+        )}
     </div>
   );
 };
 
 
 const ContractExplorer: React.FC = () => {
-    const [rpcUrl, setRpcUrl] = useState<string>('http://127.0.0.1:8545');
+    const [rpcUrl, setRpcUrl] = useState<string>('https://cloudflare-eth.com');
     const [contractAddress, setContractAddress] = useState<string>('');
     const [abi, setAbi] = useState<string>('');
     const [contract, setContract] = useState<Contract | null>(null);
@@ -451,7 +564,7 @@ const ContractExplorer: React.FC = () => {
                                             <select value={selectedReadFn} onChange={e => setSelectedReadFn(e.target.value)} className="w-full bg-gray-900 border border-gray-700 rounded-md px-3 py-2 mb-6 text-white focus:outline-none focus:ring-2 focus:ring-cyan-500 font-mono">
                                                 {readFunctions.map(fn => <option key={fn.format()} value={fn.format()}>{fn.name}</option>)}
                                             </select>
-                                            {selectedReadAbiItem && <FunctionForm abiItem={selectedReadAbiItem} contract={contract} onTransactionSent={handleTransactionSent} connectedSigner={null} />}
+                                            {selectedReadAbiItem && <FunctionForm abiItem={selectedReadAbiItem} contract={contract} onTransactionSent={handleTransactionSent} connectedSigner={null} contractAddress={contractAddress} rpcUrl={rpcUrl} />}
                                         </>
                                     ) : <p className="text-gray-400">No read functions found in ABI.</p>}
                                 </div>
@@ -478,7 +591,7 @@ const ContractExplorer: React.FC = () => {
                                             <select value={selectedWriteFn} onChange={e => setSelectedWriteFn(e.target.value)} className="w-full bg-gray-900 border border-gray-700 rounded-md px-3 py-2 mb-6 text-white focus:outline-none focus:ring-2 focus:ring-cyan-500 font-mono">
                                                 {writeFunctions.map(fn => <option key={fn.format()} value={fn.format()}>{fn.name}</option>)}
                                             </select>
-                                            {selectedWriteAbiItem && <FunctionForm abiItem={selectedWriteAbiItem} contract={contract} onTransactionSent={handleTransactionSent} connectedSigner={connectedSigner} />}
+                                            {selectedWriteAbiItem && <FunctionForm abiItem={selectedWriteAbiItem} contract={contract} onTransactionSent={handleTransactionSent} connectedSigner={connectedSigner} contractAddress={contractAddress} rpcUrl={rpcUrl} />}
                                         </>
                                     ) : <p className="text-gray-400">No write functions found in ABI.</p>}
                                 </div>
