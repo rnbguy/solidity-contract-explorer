@@ -5,6 +5,8 @@ import { ethers, BrowserProvider, JsonRpcProvider, Contract, Interface, isAddres
 import type { AbiItem, PastTransaction, FullTransaction, EthersError } from '../types';
 import { ShieldCheckIcon, PlugIcon, EyeIcon, EyeSlashIcon, CheckCircleIcon, XCircleIcon, SpinnerIcon, WalletIcon, ServerIcon, ClipboardDocumentListIcon, CodeBracketIcon, ClipboardIcon, ClipboardCheckIcon, MinusIcon, PlusIcon, ArrowRightCircleIcon, PaperAirplaneIcon, LinkSlashIcon, TrashIcon } from './icons';
 
+const DEFAULT_RPC_URL = 'http://127.0.0.1:8545';
+
 declare global {
   interface Window {
     ethereum?: any;
@@ -137,7 +139,8 @@ const FunctionForm: React.FC<{
   connectedSigner: ethers.Signer | null;
   contractAddress: string;
   rpcUrl: string;
-}> = ({ abiItem, contract, onTransactionSent, connectedSigner, contractAddress, rpcUrl }) => {
+  provider: JsonRpcProvider | null;
+}> = ({ abiItem, contract, onTransactionSent, connectedSigner, contractAddress, rpcUrl, provider }) => {
   const [inputs, setInputs] = useState<any[]>(() => abiItem.inputs.map(buildInitialState));
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState<string>('');
@@ -260,11 +263,13 @@ const FunctionForm: React.FC<{
             if (!connectedSigner || !window.ethereum) {
                 throw new Error('Wallet not connected. Please connect your wallet in the "Write" tab.');
             }
+            if (!provider) {
+                throw new Error('RPC provider unavailable. Please reconnect to the contract.');
+            }
 
             const walletProvider = new BrowserProvider(window.ethereum);
             const walletNetwork = await walletProvider.getNetwork();
-            const rpcProvider = contract.provider as JsonRpcProvider;
-            const rpcNetwork = await rpcProvider.getNetwork();
+            const rpcNetwork = await provider.getNetwork();
 
             if (walletNetwork.chainId !== rpcNetwork.chainId) {
                 const rpcChainIdHex = `0x${rpcNetwork.chainId.toString(16)}`;
@@ -374,7 +379,7 @@ const FunctionForm: React.FC<{
 
 
 const ContractExplorer: React.FC = () => {
-    const [rpcUrl, setRpcUrl] = useState<string>(() => localStorage.getItem('rpcUrl') || 'https://cloudflare-eth.com');
+    const [rpcUrl, setRpcUrl] = useState<string>(() => localStorage.getItem('rpcUrl') || DEFAULT_RPC_URL);
     const [contractAddress, setContractAddress] = useState<string>(() => localStorage.getItem('contractAddress') || '');
     const [abi, setAbi] = useState<string>(() => localStorage.getItem('abi') || '');
 
@@ -399,6 +404,7 @@ const ContractExplorer: React.FC = () => {
     const [connectedAccount, setConnectedAccount] = useState<string | null>(null);
     const [connectedSigner, setConnectedSigner] = useState<ethers.Signer | null>(null);
     const [isConnectingWallet, setIsConnectingWallet] = useState<boolean>(false);
+    const [isBytecodeCopied, setIsBytecodeCopied] = useState<boolean>(false);
 
     useEffect(() => {
         localStorage.setItem('rpcUrl', rpcUrl);
@@ -412,7 +418,7 @@ const ContractExplorer: React.FC = () => {
         localStorage.removeItem('abi');
 
         // Reset inputs to default
-        setRpcUrl('https://cloudflare-eth.com');
+        setRpcUrl(DEFAULT_RPC_URL);
         setContractAddress('');
         setAbi('');
         
@@ -506,7 +512,7 @@ const ContractExplorer: React.FC = () => {
         setConnectedSigner(null);
     };
 
-    const validateContract = async () => {
+    const fetchBytecode = useCallback(async () => {
         setIsValidationLoading(true);
         setValidationStatus('idle');
         setValidationError('');
@@ -527,7 +533,11 @@ const ContractExplorer: React.FC = () => {
         } finally {
             setIsValidationLoading(false);
         }
-    };
+    }, [rpcUrl, contractAddress]);
+
+    const validateContract = useCallback(() => {
+        fetchBytecode();
+    }, [fetchBytecode]);
 
     const connectToContract = () => {
         setError('');
@@ -585,6 +595,23 @@ const ContractExplorer: React.FC = () => {
 
     const selectedReadAbiItem = useMemo(() => readFunctions.find(f => f.format() === selectedReadFn), [readFunctions, selectedReadFn]);
     const selectedWriteAbiItem = useMemo(() => writeFunctions.find(f => f.format() === selectedWriteFn), [writeFunctions, selectedWriteFn]);
+
+    useEffect(() => {
+        if (activeTab === 'bytecode') {
+            fetchBytecode();
+        }
+    }, [activeTab, fetchBytecode]);
+
+    const handleCopyBytecode = async () => {
+        if (!bytecode) return;
+        try {
+            await navigator.clipboard.writeText(bytecode);
+            setIsBytecodeCopied(true);
+            setTimeout(() => setIsBytecodeCopied(false), 1500);
+        } catch (err) {
+            console.error('Failed to copy bytecode to clipboard:', err);
+        }
+    };
 
     return (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -663,7 +690,7 @@ const ContractExplorer: React.FC = () => {
                         <div className="flex border-b border-gray-700">
                            <TabButton title="Read" onClick={() => setActiveTab('read')} isActive={activeTab === 'read'} />
                            <TabButton title="Write" onClick={() => setActiveTab('write')} isActive={activeTab === 'write'} />
-                           <TabButton title="Bytecode" onClick={() => setActiveTab('bytecode')} isActive={activeTab === 'bytecode'} disabled={!bytecode} />
+                           <TabButton title="Bytecode" onClick={() => setActiveTab('bytecode')} isActive={activeTab === 'bytecode'} />
                         </div>
 
                         <div className="p-6">
@@ -674,7 +701,7 @@ const ContractExplorer: React.FC = () => {
                                             <select value={selectedReadFn} onChange={e => setSelectedReadFn(e.target.value)} className="w-full bg-gray-900 border border-gray-700 rounded-md px-3 py-2 mb-6 text-white focus:outline-none focus:ring-2 focus:ring-cyan-500 font-mono">
                                                 {readFunctions.map(fn => <option key={fn.format()} value={fn.format()}>{fn.name}</option>)}
                                             </select>
-                                            {selectedReadAbiItem && <FunctionForm abiItem={selectedReadAbiItem} contract={contract} onTransactionSent={handleTransactionSent} connectedSigner={null} contractAddress={contractAddress} rpcUrl={rpcUrl} />}
+                                            {selectedReadAbiItem && <FunctionForm abiItem={selectedReadAbiItem} contract={contract} onTransactionSent={handleTransactionSent} connectedSigner={null} contractAddress={contractAddress} rpcUrl={rpcUrl} provider={provider} />}
                                         </>
                                     ) : <p className="text-gray-400">No read functions found in ABI.</p>}
                                 </div>
@@ -706,7 +733,7 @@ const ContractExplorer: React.FC = () => {
                                             <select value={selectedWriteFn} onChange={e => setSelectedWriteFn(e.target.value)} className="w-full bg-gray-900 border border-gray-700 rounded-md px-3 py-2 mb-6 text-white focus:outline-none focus:ring-2 focus:ring-cyan-500 font-mono">
                                                 {writeFunctions.map(fn => <option key={fn.format()} value={fn.format()}>{fn.name}</option>)}
                                             </select>
-                                            {selectedWriteAbiItem && <FunctionForm abiItem={selectedWriteAbiItem} contract={contract} onTransactionSent={handleTransactionSent} connectedSigner={connectedSigner} contractAddress={contractAddress} rpcUrl={rpcUrl} />}
+                                            {selectedWriteAbiItem && <FunctionForm abiItem={selectedWriteAbiItem} contract={contract} onTransactionSent={handleTransactionSent} connectedSigner={connectedSigner} contractAddress={contractAddress} rpcUrl={rpcUrl} provider={provider} />}
                                         </>
                                     ) : <p className="text-gray-400">No write functions found in ABI.</p>}
                                 </div>
@@ -714,8 +741,25 @@ const ContractExplorer: React.FC = () => {
 
                             {activeTab === 'bytecode' && (
                                 <div>
-                                    <h3 className="text-xl font-bold mb-2">Contract Bytecode</h3>
-                                    <textarea readOnly value={bytecode} rows={15} className="w-full bg-gray-900 border-gray-700 rounded-md p-3 text-green-300 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-cyan-500" />
+                                    <div className="flex items-center justify-between mb-2">
+                                        <h3 className="text-xl font-bold">Contract Bytecode</h3>
+                                        <button
+                                            onClick={handleCopyBytecode}
+                                            disabled={!bytecode || isValidationLoading}
+                                            className="flex items-center gap-2 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded-md text-sm text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                                            title="Copy bytecode to clipboard"
+                                        >
+                                            {isBytecodeCopied ? <ClipboardCheckIcon className="w-4 h-4" /> : <ClipboardIcon className="w-4 h-4" />}
+                                            {isBytecodeCopied ? 'Copied' : 'Copy'}
+                                        </button>
+                                    </div>
+                                    {isValidationLoading && (
+                                        <div className="flex items-center gap-2 text-sm text-gray-300 mb-3">
+                                            <SpinnerIcon className="w-4 h-4" />
+                                            Fetching bytecode...
+                                        </div>
+                                    )}
+                                    <textarea readOnly value={bytecode} rows={15} className="w-full bg-gray-900 border border-gray-700 rounded-md p-3 text-green-300 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-cyan-500" placeholder="Enter an RPC endpoint and contract address, then open this tab to load bytecode." />
                                 </div>
                             )}
                         </div>

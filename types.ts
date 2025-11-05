@@ -23,9 +23,3 @@ export type EthersError = {
   reason?: string;
   data?: any;
 };
-
-// Fix: Add ChatMessage type definition
-export interface ChatMessage {
-  role: 'user' | 'model';
-  text: string;
-}
